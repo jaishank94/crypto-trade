@@ -2,6 +2,7 @@ import time
 import logging
 from binance.client import Client
 import numpy as np
+import math
 
 # Constants
 exchangeName = "binance"
@@ -11,8 +12,8 @@ window = 20
 initialBalance = 0.001
 riskPercentage = 0.02  # 2% of capital at risk per trade
 stopLossPercent = 0.05  # 5% stop loss
-short_window = 50  # Short-term EMA window
-long_window = 200  # Long-term EMA window
+short_window = 5  # Short-term EMA window
+long_window = 10  # Long-term EMA window
 
 # Logging configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -32,7 +33,7 @@ def main():
         try:
             # Print current balance
             print_current_balance(binanceClient)
-            
+
             # Fetch current market data
             currentPrice = get_current_price(binanceClient)
 
@@ -41,7 +42,7 @@ def main():
                 execute_trade(binanceClient, currentPrice)
 
             # Sleep for some time before checking again
-            time.sleep(60)  # 5 minutes
+            time.sleep(20)  # 5 minutes
         except Exception as e:
             logging.error(f"An error occurred: {e}")
 
@@ -84,6 +85,7 @@ def should_buy(client):
 
         # Determine if the short-term EMA is above the long-term EMA
         currentPrice = get_current_price(client)
+        print(ema_short, ema_long, currentPrice)
         return ema_short > ema_long and currentPrice > ema_short
     except Exception as e:
         logging.error(f"Failed to determine buy signal: {e}")
@@ -108,7 +110,6 @@ def print_current_balance(client):
     except Exception as e:
         logging.error(f"Failed to fetch current balance: {e}")
 
-# Execute trade
 def execute_trade(client, currentPrice):
     try:
         # Get account balance
@@ -123,15 +124,31 @@ def execute_trade(client, currentPrice):
             logging.warning("Available balance is not sufficient for trade.")
             return
 
+        # Fetch symbol info to get lot size constraints
+        symbol_info = client.get_symbol_info(symbol)
+        lot_size_filter = next((f for f in symbol_info['filters'] if f['filterType'] == 'LOT_SIZE'), None)
+        if lot_size_filter is None:
+            logging.error("Failed to retrieve lot size information.")
+            return
+
+        # Determine the step size for the lot size
+        step_size = float(lot_size_filter['stepSize'])
+
+        # Calculate order quantity and round to nearest valid lot size
+        order_quantity = round((positionSize / currentPrice) / step_size) * step_size
+
+        # Convert order quantity to string with appropriate precision
+        order_quantity_str = '{:.{prec}f}'.format(order_quantity, prec=int(-math.log10(step_size)))
+
+        # Place buy order
+        order = client.order_market_buy(symbol=symbol, quantity=order_quantity_str)
+
         # Calculate stop loss
         stopLossPrice = currentPrice * (1 - stopLossPercent)
 
-        # Place buy order
-        order = client.order_market_buy(symbol=symbol, quantity=round(positionSize / currentPrice, 6))
-
         # Place stop loss order
         client.create_order(symbol=symbol, side='SELL', type='STOP_LOSS', quantity=order['executedQty'],
-                            stopPrice=str(stopLossPrice), timeInForce='GTC')
+                            stopPrice=str(stopLossPrice))
 
         logging.info(f"Buy order placed at {currentPrice:.2f}")
         logging.info(f"Stop loss order placed at {stopLossPrice:.2f}")
